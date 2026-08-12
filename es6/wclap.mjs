@@ -5,7 +5,9 @@ import generateForwardingWasm from "./generate-forwarding-wasm.mjs"
 /* These exported functions should work for any Wasm32 host using the `wclap-js-instance` version of `Instance`.*/
 export {getHost, startHost, getWclap, maximumMemoryPages, runThread};
 
-const maximumHostMemoryPages = 1024;
+// The host only stores bridge state and short-lived control data. Keep its two
+// shared heaps small so mobile WebKit retains room for the plug-in heap.
+const maximumHostMemoryPages = 256;
 
 class WclapHost {
 	#config;
@@ -227,7 +229,10 @@ class WclapHost {
 			init64: instancePtr => {throw Error("64-bit WCLAP not supported (yet)")}
 		};
 		
-		if (globalThis.crossOriginIsolated && !config.wasi.memory) {
+		// AudioWorkletGlobalScope does not consistently expose crossOriginIsolated,
+		// even when shared WebAssembly memory is available. This host requires shared
+		// memory, so use the bounded host budget directly instead of that global.
+		if (!config.wasi.memory) {
 			config.wasi = Object.assign({}, config.wasi, {
 				memory: new WebAssembly.Memory({initial: 8, maximum: maximumHostMemoryPages, shared: true}),
 				memorySpec: {initial: 8, maximum: maximumHostMemoryPages, shared: true},
@@ -245,7 +250,7 @@ class WclapHost {
 				if (entry.kind == 'memory') {
 					if (!importMemory) {
 						importMemory = new WebAssembly.Memory({initial: 2, maximum: maximumHostMemoryPages, shared: true});
-						if (globalThis.crossOriginIsolated) config.memory = importMemory;
+						config.memory = importMemory;
 					}
 					
 					if (!hostImports[entry.module]) hostImports[entry.module] = {};
@@ -413,7 +418,8 @@ async function getHost(initObj) {
 	if (initObj.module) return initObj;
 
 	if (!initObj.module) {
-		initObj.url = new URL(initObj.url, document.baseURI).href;
+		initObj.url = new URL(initObj.url,
+			globalThis.document?.baseURI || globalThis.location?.href).href;
 		initObj.module = await WebAssembly.compileStreaming(fetch(initObj.url));
 	}
 	if (!initObj.wasi) initObj.wasi = await getWasi();

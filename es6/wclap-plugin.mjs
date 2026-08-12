@@ -45,7 +45,8 @@ export default async function getWclap(options) {
 		let modulePages = Math.max(Math.ceil(moduleSize/65536) || 4, 4);
 		options.memorySpec = {initial: modulePages, maximum: maximumMemoryPages, shared: true};
 		// If we're cross-origin isolated, actually create this memory
-		if (globalThis.crossOriginIsolated) options.memory = new WebAssembly.Memory(options.memorySpec);
+		if (globalThis.crossOriginIsolated && !options.deferMemory)
+			options.memory = new WebAssembly.Memory(options.memorySpec);
 	}
 
 	let wasmPath = `${options.pluginPath}/module.wasm`;
@@ -89,6 +90,7 @@ export default async function getWclap(options) {
 
 	options.module = await WebAssembly.compile(options.files[wasmPath]);
 	guessMemorySize(options.files[wasmPath], options.module);
+	options.files[wasmPath] = new ArrayBuffer(0);
 
 	return options;
 }
