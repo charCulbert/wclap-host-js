@@ -236,6 +236,7 @@ class WclapHost {
 			config.wasi = Object.assign({}, config.wasi, {
 				memory: new WebAssembly.Memory({initial: 8, maximum: maximumHostMemoryPages, shared: true}),
 				memorySpec: {initial: 8, maximum: maximumHostMemoryPages, shared: true},
+				initializeMemory: true,
 			});
 		}
 		let wasiPromise = startWasi(config.wasi);
