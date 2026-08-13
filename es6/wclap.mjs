@@ -318,7 +318,9 @@ class WclapHost {
 
 		let pluginWasi = null;
 		if (needsWasi) {
-			pluginWasi = await this.#wasi.copyForRebinding();
+			pluginWasi = wclapInitObj.isolatedWasi
+				? await this.#wasi.copyForIsolatedRebinding()
+				: await this.#wasi.copyForRebinding();
 			Object.assign(wclapImports, pluginWasi.importObj);
 
 			if (needsInit && wclapInitObj.files) {
