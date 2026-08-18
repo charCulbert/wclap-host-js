@@ -12,10 +12,14 @@ It provides an `Instance` implementation (as defined in [`wclap-cpp`](https://gi
 
 It also provides a JavaScript library (ES6 module: `wclap-js/wclap.mjs`) which can load any WASM hosts written using the above C++ library, and handles the corresponding `WebAssembly` instances.
 
-All functions are asynchronous aside from `host.getWorkerData()` and the two `.initObj()` methods.  The top-level exported functions are:
+Loading functions are asynchronous. Once the host and WASI modules are compiled,
+the matching synchronous startup functions can be used in execution contexts
+which cannot advance promise jobs during initialization. The top-level exported
+functions are:
 
 * `getHost()` / `getWclap()` - takes a URL and returns an "initialisation object" (including a compiled WebAssembly module) for the host or a WCLAP module
 * `startHost(initObj, ?hostImports, ?createWorker)` - takes the initialisation object and (if supported) a function to create new `Worker`s, and returns a Host.
+* `startHostSync(initObj, ?hostImports)` - synchronously starts the same Host from an initialisation object containing compiled host and WASI modules.
 * `runThread(threadData, hostImports, createWorker)` - to be called from any `Worker`s that you start
 
 ![wclap-js architecture diagram](doc/wclap-js-outline.png)
@@ -27,6 +31,7 @@ This is the object returned from `startHost()`.  It has the following properties
 * `.hostInstance` - the actual `WebAssembly.Instance`.  Any custom exports from your C++ will be in `.hostInstance.exports`. 
 * `.hostMemory` - hosts's memory, whether imported or exported 
 * `.startWclap(wclapInit, ?createWorker)` - takes an initialisation object and returns a Wclap
+* `.startWclapSync(wclapInit, ?createWorker)` - synchronously starts the same Wclap from an initialisation object containing a compiled module
 * `.getWorkerData()` - see `createWorker()` below
 * `.shared` - whether this host (currently) supports threads
 * `.initObj()` - an initialisation object which can be passed across `Worker`s to create a matching `Host`.  If cross-origin isolated, this will join the existing host as a new thread.

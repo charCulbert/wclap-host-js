@@ -1,9 +1,9 @@
-import {getWasi, startWasi} from "./wasi/wasi.mjs";
+import {getWasi, startWasi, startWasiSync} from "./wasi/wasi.mjs";
 import getWclap, {maximumMemoryPages} from "./wclap-plugin.mjs";
 import generateForwardingWasm from "./generate-forwarding-wasm.mjs"
 
 /* These exported functions should work for any Wasm32 host using the `wclap-js-instance` version of `Instance`.*/
-export {getHost, startHost, getWclap, maximumMemoryPages, runThread};
+export {getHost, startHost, startHostSync, getWclap, maximumMemoryPages, runThread};
 
 // The host only stores bridge state and short-lived control data. Keep its two
 // shared heaps small so mobile WebKit retains room for the plug-in heap.
@@ -87,7 +87,7 @@ class WclapHost {
 		host.hostInstance.exports.wasi_thread_start(workerData.threadId, workerData.threadContext);
 	}
 
-	constructor(config, hostImports) {
+	constructor(config, hostImports, synchronous = false) {
 		if (!hostImports) hostImports = {};
 		// Methods which let the host manage the WCLAP in another module
 		let getEntry = instancePtr => {
@@ -239,9 +239,7 @@ class WclapHost {
 				initializeMemory: true,
 			});
 		}
-		let wasiPromise = startWasi(config.wasi);
-
-		this.ready = (async _ => {
+		let prepare = wasi => {
 			this.#config = config;
 			let importMemory = config.memory;
 			let needsInit = !importMemory;
@@ -260,7 +258,7 @@ class WclapHost {
 			});
 			
 			// Add WASI imports
-			this.#wasi = await wasiPromise;
+			this.#wasi = wasi;
 			config.wasi = this.#wasi.initObj();
 			Object.assign(hostImports, this.#wasi.importObj);
 
@@ -270,7 +268,10 @@ class WclapHost {
 				return this.#hostThreadSpawnWASIT1(threadArg);
 			};
 
-			this.hostInstance = await WebAssembly.instantiate(this.#config.module, hostImports);
+			return {importMemory, needsInit};
+		};
+		let finish = ({importMemory, needsInit}, hostInstance) => {
+			this.hostInstance = hostInstance;
 			this.hostMemory = importMemory || this.hostInstance.exports.memory;
 			
 			for (let key in this.hostInstance.exports) {
@@ -286,15 +287,25 @@ class WclapHost {
 			this.shared = !!config.memory;
 			this.ready = true;
 			return this;
-		})();
+		};
+		if (synchronous) {
+			let prepared = prepare(startWasiSync(config.wasi));
+			this.ready = finish(prepared,
+				new WebAssembly.Instance(this.#config.module, hostImports));
+		} else {
+			this.ready = (async _ => {
+				let prepared = prepare(await startWasi(config.wasi));
+				return finish(prepared,
+					await WebAssembly.instantiate(this.#config.module, hostImports));
+			})();
+		}
 	}
 	
 	initObj() {
 		return Object.assign({}, this.#config);
 	}
 	
-	/// Returns an instance pointer (`Instance *`) for the C++ host.
-	async startWclap(wclapInitObj, createWorkerFn) {
+	#prepareWclap(wclapInitObj) {
 		if (!wclapInitObj.module) throw Error('WCLAP init object must be from `getWclap()`');
 
 		let wclapImports = {};
@@ -314,13 +325,15 @@ class WclapHost {
 			}
 		});
 
-		let instancePtr = wclapInitObj.instancePtr;
+		return {
+			wclapInitObj, wclapImports, importMemory, needsInit, needsWasi,
+			instancePtr: wclapInitObj.instancePtr,
+		};
+	}
 
-		let pluginWasi = null;
-		if (needsWasi) {
-			pluginWasi = wclapInitObj.isolatedWasi
-				? await this.#wasi.copyForIsolatedRebinding()
-				: await this.#wasi.copyForRebinding();
+	#attachPluginWasi(prepared, pluginWasi) {
+		if (pluginWasi) {
+			let {wclapImports, wclapInitObj, needsInit} = prepared;
 			Object.assign(wclapImports, pluginWasi.importObj);
 
 			if (needsInit && wclapInitObj.files) {
@@ -329,12 +342,14 @@ class WclapHost {
 			}
 		}
 		// wasi-threads
-		if (!wclapImports.wasi) wclapImports.wasi = {};
-		wclapImports.wasi['thread-spawn'] = threadArg => {
-			return this.#pluginThreadSpawnWASIT1(instancePtr, threadArg);
+		if (!prepared.wclapImports.wasi) prepared.wclapImports.wasi = {};
+		prepared.wclapImports.wasi['thread-spawn'] = threadArg => {
+			return this.#pluginThreadSpawnWASIT1(prepared.instancePtr, threadArg);
 		};
+	}
 
-		let pluginInstance = await WebAssembly.instantiate(wclapInitObj.module, wclapImports);
+	#finishWclap(prepared, pluginWasi, pluginInstance, createWorkerFn) {
+		let {wclapInitObj, importMemory, needsInit} = prepared;
 		let functionTable = null;
 		for (let name in pluginInstance.exports) {
 			if (pluginInstance.exports[name] instanceof WebAssembly.Table) {
@@ -363,11 +378,12 @@ class WclapHost {
 
 		if (needsInit) {
 			if (is64) throw Error("wasm64 WCLAP isn't supported yet");
-			instancePtr = this.hostInstance.exports._wclapInstanceCreate(is64);
-			if (!instancePtr) throw Error("creating WCLAP `Instance *` failed");
+			prepared.instancePtr = this.hostInstance.exports._wclapInstanceCreate(is64);
+			if (!prepared.instancePtr) throw Error("creating WCLAP `Instance *` failed");
 			// Set the path
 			let pathBytes = new TextEncoder('utf-8').encode(wclapInitObj.pluginPath);
-			let pathPtr = this.hostInstance.exports._wclapInstanceSetPath(instancePtr, pathBytes.length);
+			let pathPtr = this.hostInstance.exports._wclapInstanceSetPath(
+				prepared.instancePtr, pathBytes.length);
 			new Uint8Array(this.hostMemory.buffer).set(pathBytes, pathPtr);
 		} else {
 			if (!wclapInitObj.hostFunctions) throw Error("Starting WCLAP thread, but host functions not provided - did you use `host.getWorkerData()`?");
@@ -375,13 +391,40 @@ class WclapHost {
 			entry.hadInit = true;
 		}
 		let shared = !!wclapInitObj.memory;
-		this.#wclapMap[instancePtr] = entry;
+		this.#wclapMap[prepared.instancePtr] = entry;
 
 		return {
-			ptr: instancePtr,
+			ptr: prepared.instancePtr,
 			memory: entry.memory,
 			shared: shared
 		};
+	}
+
+	/// Returns an instance pointer (`Instance *`) for the C++ host.
+	async startWclap(wclapInitObj, createWorkerFn) {
+		let prepared = this.#prepareWclap(wclapInitObj);
+		let pluginWasi = prepared.needsWasi
+			? (wclapInitObj.isolatedWasi
+				? await this.#wasi.copyForIsolatedRebinding()
+				: await this.#wasi.copyForRebinding())
+			: null;
+		this.#attachPluginWasi(prepared, pluginWasi);
+		let pluginInstance = await WebAssembly.instantiate(
+			wclapInitObj.module, prepared.wclapImports);
+		return this.#finishWclap(prepared, pluginWasi, pluginInstance, createWorkerFn);
+	}
+
+	startWclapSync(wclapInitObj, createWorkerFn) {
+		let prepared = this.#prepareWclap(wclapInitObj);
+		let pluginWasi = prepared.needsWasi
+			? (wclapInitObj.isolatedWasi
+				? this.#wasi.copyForIsolatedRebindingSync()
+				: this.#wasi.copyForRebindingSync())
+			: null;
+		this.#attachPluginWasi(prepared, pluginWasi);
+		let pluginInstance = new WebAssembly.Instance(
+			wclapInitObj.module, prepared.wclapImports);
+		return this.#finishWclap(prepared, pluginWasi, pluginInstance, createWorkerFn);
 	}
 	
 	#assignHostFunctions(entry) {
@@ -414,6 +457,13 @@ class WclapHost {
 async function startHost(initObj, hostImports) {
 	initObj = Object.assign({}, initObj);
 	return new WclapHost(initObj, hostImports).ready;
+}
+
+function startHostSync(initObj, hostImports) {
+	initObj = Object.assign({}, initObj);
+	if (!initObj.module || !initObj.wasi?.module)
+		throw Error("Synchronous WCLAP host startup requires compiled host and WASI modules");
+	return new WclapHost(initObj, hostImports, true).ready;
 }
 
 async function getHost(initObj) {
