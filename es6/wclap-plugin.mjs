@@ -56,14 +56,21 @@ export default async function getWclap(options) {
 	if (options.module && (options.module instanceof ArrayBuffer || ArrayBuffer.isView(options.module))) {
 		let buffer = options.module;
 		options.module = await WebAssembly.compile(buffer);
-		guessMemorySize(buffer, module);
+		guessMemorySize(buffer, options.module);
 		return options;
 	}
 
 	let response = await fetch(options.url);
-	if (response.headers.get("Content-Type") == "application/wasm") {
+	let contentType = response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
+	if (contentType == "application/wasm") {
 		options.module = await WebAssembly.compileStreaming(response);
 		guessMemorySize(response.headers.get('Content-Length') || (1<<24), options.module);
+		return options;
+	}
+	if (new URL(response.url || options.url).pathname.toLowerCase().endsWith(".wasm")) {
+		let buffer = await response.arrayBuffer();
+		options.module = await WebAssembly.compile(buffer);
+		guessMemorySize(buffer, options.module);
 		return options;
 	}
 
