@@ -182,7 +182,8 @@ function parsePax(bytes) {
 		let name = record.slice(0, equals);
 		let value = record.slice(equals + 1);
 		fields[name] = value === "" ? null
-			: /^\d+$/.test(value) ? Number.parseInt(value, 10) : value;
+			: name === "size" && /^\d+$/.test(value)
+				? Number.parseInt(value, 10) : value;
 		offset += length;
 	}
 	return fields;
@@ -224,6 +225,11 @@ async function expandTarGz(tarResponse, limitBytes = Number.MAX_SAFE_INTEGER,
 			let header = tarHeader(block);
 			let size = header.size;
 			let paddedSize = Math.ceil(size / blockBytes) * blockBytes;
+			let requiredBytes = previousBytes + source.position + paddedSize;
+			if (requiredBytes > limitBytes) {
+				throw bundleLimitError(limitBytes, previousBytes + source.position,
+					"expanded archive", requiredBytes);
+			}
 			if (header.type === "g" || header.type === "x") {
 				let fields = parsePax(await source.read(size));
 				await source.skip(paddedSize - size);
@@ -239,7 +245,7 @@ async function expandTarGz(tarResponse, limitBytes = Number.MAX_SAFE_INTEGER,
 			}
 			size = tarNumber(header.size, "file size");
 			paddedSize = Math.ceil(size / blockBytes) * blockBytes;
-			let requiredBytes = previousBytes + source.position + paddedSize;
+			requiredBytes = previousBytes + source.position + paddedSize;
 			if (requiredBytes > limitBytes) {
 				throw bundleLimitError(limitBytes, previousBytes + source.position,
 					"expanded archive", requiredBytes);
