@@ -22,8 +22,6 @@ functions are:
 * `startHostSync(initObj, ?hostImports)` - synchronously starts the same Host from an initialisation object containing compiled host and WASI modules.
 * `runThread(threadData, hostImports, createWorker)` - to be called from any `Worker`s that you start
 
-![wclap-js architecture diagram](doc/wclap-js-outline.png)
-
 ### Host
 
 This is the object returned from `startHost()`.  It has the following properties/methods:
