@@ -338,7 +338,7 @@ class WclapHost {
 
 			if (needsInit && wclapInitObj.files) {
 				pluginWasi.loadFiles(wclapInitObj.files);
-				// TODO: delete these files, since they'll now get passed around inside the WASI's memory
+				wclapInitObj.files = undefined;
 			}
 		}
 		// wasi-threads
@@ -403,11 +403,24 @@ class WclapHost {
 	/// Returns an instance pointer (`Instance *`) for the C++ host.
 	async startWclap(wclapInitObj, createWorkerFn) {
 		let prepared = this.#prepareWclap(wclapInitObj);
-		let pluginWasi = prepared.needsWasi
-			? (wclapInitObj.isolatedWasi
-				? await this.#wasi.copyForIsolatedRebinding()
-				: await this.#wasi.copyForRebinding())
-			: null;
+		let pluginWasi;
+		try {
+			pluginWasi = prepared.needsWasi
+				? (wclapInitObj.isolatedWasi
+					? await this.#wasi.copyForIsolatedRebinding(
+						wclapInitObj.resourceMemorySpec)
+					: await this.#wasi.copyForRebinding())
+				: null;
+		} catch (error) {
+			if (!error.code && error instanceof RangeError
+				&& wclapInitObj.resourceMemorySpec) {
+				error.code = "memory-unavailable";
+				error.stage = "resource memory";
+				error.limitBytes = wclapInitObj.resourceMemorySpec.maximum*65536;
+				error.requiredBytes = wclapInitObj.resourceMemorySpec.initial*65536;
+			}
+			throw error;
+		}
 		this.#attachPluginWasi(prepared, pluginWasi);
 		let pluginInstance = await WebAssembly.instantiate(
 			wclapInitObj.module, prepared.wclapImports);
@@ -416,11 +429,24 @@ class WclapHost {
 
 	startWclapSync(wclapInitObj, createWorkerFn) {
 		let prepared = this.#prepareWclap(wclapInitObj);
-		let pluginWasi = prepared.needsWasi
-			? (wclapInitObj.isolatedWasi
-				? this.#wasi.copyForIsolatedRebindingSync()
-				: this.#wasi.copyForRebindingSync())
-			: null;
+		let pluginWasi;
+		try {
+			pluginWasi = prepared.needsWasi
+				? (wclapInitObj.isolatedWasi
+					? this.#wasi.copyForIsolatedRebindingSync(
+						wclapInitObj.resourceMemorySpec)
+					: this.#wasi.copyForRebindingSync())
+				: null;
+		} catch (error) {
+			if (!error.code && error instanceof RangeError
+				&& wclapInitObj.resourceMemorySpec) {
+				error.code = "memory-unavailable";
+				error.stage = "resource memory";
+				error.limitBytes = wclapInitObj.resourceMemorySpec.maximum*65536;
+				error.requiredBytes = wclapInitObj.resourceMemorySpec.initial*65536;
+			}
+			throw error;
+		}
 		this.#attachPluginWasi(prepared, pluginWasi);
 		let pluginInstance = new WebAssembly.Instance(
 			wclapInitObj.module, prepared.wclapImports);
