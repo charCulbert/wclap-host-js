@@ -61,6 +61,37 @@ function sharedFile(value, shareFiles) {
 	return copy.buffer;
 }
 
+function memoryHints(files) {
+	let entry = Object.entries(files).find(([path]) => /(^|\/)memory\.json$/.test(path));
+	if (!entry) return null;
+	let value;
+	try {
+		let bytes = ArrayBuffer.isView(entry[1])
+			? new Uint8Array(entry[1].buffer, entry[1].byteOffset, entry[1].byteLength)
+			: new Uint8Array(entry[1]);
+		// Chromium's TextDecoder rejects even a typed view backed by shared memory.
+		// The metadata is tiny, so copy it to an ordinary ArrayBuffer for parsing.
+		value = JSON.parse(new TextDecoder().decode(Uint8Array.from(bytes)));
+	} catch (error) {
+		throw codedError("invalid-archive", "Invalid memory.json", {cause: error});
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw codedError("invalid-archive", "memory.json must contain an object");
+	let result = {};
+	for (let name of ["minimumBytes", "recommendedInitialBytes", "recommendedMaximumBytes"]) {
+		if (!Number.isSafeInteger(value[name]) || value[name] < wasmPageBytes)
+			throw codedError("invalid-archive", `memory.json has invalid ${name}`);
+		result[name] = value[name];
+	}
+	if (result.recommendedInitialBytes < result.minimumBytes
+			|| result.recommendedMaximumBytes < result.recommendedInitialBytes) {
+		throw codedError("invalid-archive", "memory.json memory recommendations are out of order");
+	}
+	if (value.shared === false)
+		throw codedError("invalid-archive", "WCLAP processing requires shared memory");
+	return result;
+}
+
 function boundedResponse(response, limitBytes, previousBytes = 0) {
 	if (!response.ok) {
 		throw codedError("http-error",
@@ -151,7 +182,7 @@ export default async function getWclap(options) {
 		}
 	}
 
-	function guessMemorySize(bufferOrSize, module) {
+	function guessMemorySize(bufferOrSize, module, hints = null) {
 		let importsMemory = false;
 		WebAssembly.Module.imports(module).forEach(entry => {
 			if (entry.kind == 'memory') importsMemory = true;
@@ -165,6 +196,8 @@ export default async function getWclap(options) {
 		let modulePages = declaration
 			? Math.max(declaration.minimumPages, 4)
 			: Math.max(Math.ceil(moduleSize/wasmPageBytes) || 4, 4);
+		if (hints) modulePages = Math.max(modulePages,
+			Math.ceil(hints.minimumBytes/wasmPageBytes));
 		if (modulePages > pluginMaximumPages) {
 			const requiredBytes = modulePages*wasmPageBytes;
 			throw codedError("plugin-memory-limit",
@@ -174,10 +207,20 @@ export default async function getWclap(options) {
 					suggestedLimits: {pluginMemoryBytes: requiredBytes},
 				});
 		}
+		let maximumPages = Math.min(pluginMaximumPages,
+			declaration?.maximumPages ?? pluginMaximumPages,
+			hints ? Math.floor(hints.recommendedMaximumBytes/wasmPageBytes) : pluginMaximumPages);
+		let initialPages = Math.max(modulePages,
+			hints ? Math.ceil(hints.recommendedInitialBytes/wasmPageBytes) : modulePages);
+		if (initialPages > maximumPages) {
+			throw codedError("invalid-archive",
+				"memory.json recommendations conflict with the module memory declaration", {
+					stage: "module memory", requiredBytes: initialPages*wasmPageBytes,
+				});
+		}
 		options.memorySpec = {
-			initial: modulePages,
-			maximum: Math.min(pluginMaximumPages,
-				declaration?.maximumPages ?? pluginMaximumPages),
+			initial: initialPages,
+			maximum: maximumPages,
 			shared: true,
 		};
 		// If we're cross-origin isolated, actually create this memory
@@ -198,7 +241,7 @@ export default async function getWclap(options) {
 				bundleBytes, observedBytes, "source and host-supplied files");
 		}
 		options.module = await WebAssembly.compile(buffer);
-		guessMemorySize(buffer, options.module);
+		guessMemorySize(buffer, options.module, memoryHints(options.files));
 		options.resourceMemorySpec = resourceMemorySpec(options.files).memorySpec;
 		return options;
 	}
@@ -242,7 +285,7 @@ export default async function getWclap(options) {
 	}
 
 	options.module = await WebAssembly.compile(options.files[wasmPath]);
-	guessMemorySize(options.files[wasmPath], options.module);
+	guessMemorySize(options.files[wasmPath], options.module, memoryHints(options.files));
 	options.files[wasmPath] = new ArrayBuffer(0);
 	options.resourceMemorySpec = resourceMemorySpec(options.files).memorySpec;
 
