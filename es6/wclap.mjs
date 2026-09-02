@@ -334,6 +334,15 @@ class WclapHost {
 	#attachPluginWasi(prepared, pluginWasi) {
 		if (pluginWasi) {
 			let {wclapImports, wclapInitObj, needsInit} = prepared;
+			if (wclapInitObj.hostFiles) {
+				wclapInitObj.hostFiles = wclapInitObj.hostFiles.map(file => {
+					if (file.path.startsWith(wclapInitObj.pluginPath + "/")) return file;
+					let offset = file.path.indexOf("/resources/");
+					return offset < 0 ? file : {
+						...file, path: wclapInitObj.pluginPath + file.path.slice(offset),
+					};
+				});
+			}
 			Object.assign(wclapImports, pluginWasi.importObj);
 
 			if (needsInit && wclapInitObj.files) {
@@ -405,11 +414,15 @@ class WclapHost {
 		let prepared = this.#prepareWclap(wclapInitObj);
 		let pluginWasi;
 		try {
+			const hostResources = {
+				hostFiles: wclapInitObj.hostFiles,
+				hostBroker: wclapInitObj.hostBroker,
+			};
 			pluginWasi = prepared.needsWasi
 				? (wclapInitObj.isolatedWasi
 					? await this.#wasi.copyForIsolatedRebinding(
-						wclapInitObj.resourceMemorySpec)
-					: await this.#wasi.copyForRebinding())
+						wclapInitObj.resourceMemorySpec, hostResources)
+					: await this.#wasi.copyForRebinding(hostResources))
 				: null;
 		} catch (error) {
 			if (!error.code && error instanceof RangeError
@@ -431,11 +444,15 @@ class WclapHost {
 		let prepared = this.#prepareWclap(wclapInitObj);
 		let pluginWasi;
 		try {
+			const hostResources = {
+				hostFiles: wclapInitObj.hostFiles,
+				hostBroker: wclapInitObj.hostBroker,
+			};
 			pluginWasi = prepared.needsWasi
 				? (wclapInitObj.isolatedWasi
 					? this.#wasi.copyForIsolatedRebindingSync(
-						wclapInitObj.resourceMemorySpec)
-					: this.#wasi.copyForRebindingSync())
+						wclapInitObj.resourceMemorySpec, hostResources)
+					: this.#wasi.copyForRebindingSync(hostResources))
 				: null;
 		} catch (error) {
 			if (!error.code && error instanceof RangeError

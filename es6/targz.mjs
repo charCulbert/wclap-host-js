@@ -204,12 +204,14 @@ function zeroBlock(bytes) {
 }
 
 async function expandTarGz(tarResponse, limitBytes = Number.MAX_SAFE_INTEGER,
-	previousBytes = 0, sharedFiles = false) {
+	previousBytes = 0, sharedFiles = false, externalFile = null) {
 	if (!tarResponse.body) throw archiveError("WCLAP archive response has no body");
 	let stream = tarResponse.body.pipeThrough(new DecompressionStream("gzip"));
 	stream = limitedStream(stream, limitBytes, "expanded archive", previousBytes);
 	let source = new StreamReader(stream);
 	let files = Object.create(null);
+	let externalFiles = [];
+	let paths = new Set();
 	let globalPax = Object.create(null);
 	let nextPax = null;
 
@@ -253,17 +255,25 @@ async function expandTarGz(tarResponse, limitBytes = Number.MAX_SAFE_INTEGER,
 
 			if (header.type === "0" || header.type === "") {
 				let path = normalizeArchivePath(header.name);
-				if (Object.hasOwn(files, path))
+				if (paths.has(path))
 					throw archiveError(`Duplicate WCLAP archive path: ${path}`);
+				paths.add(path);
 				let bytes = await source.read(size, false,
-					sharedFiles && !/(^|\/)module\.wasm$/.test(path));
-				files[path] = bytes.buffer;
+					sharedFiles && !externalFile && !/(^|\/)module\.wasm$/.test(path));
+				let stored = externalFile ? await externalFile(path, bytes) : null;
+				if (stored) externalFiles.push({path, size, ...stored});
+				else if (sharedFiles && !/(^|\/)module\.wasm$/.test(path)
+						&& !(bytes.buffer instanceof SharedArrayBuffer)) {
+					let shared = new Uint8Array(new SharedArrayBuffer(size));
+					shared.set(bytes);
+					files[path] = shared.buffer;
+				} else files[path] = bytes.buffer;
 				await source.skip(paddedSize - size);
 			} else {
 				await source.skip(paddedSize);
 			}
 		}
-		return {files, expandedBytes: source.position};
+		return {files, externalFiles, expandedBytes: source.position};
 	} catch (error) {
 		await source.cancel(error);
 		throw error;

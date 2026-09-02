@@ -144,6 +144,8 @@ function fnv1aHex(string) {
 export default async function getWclap(options) {
 	if (typeof options === 'string') options = {url: options};
 	options = Object.assign({}, options);
+	let externalFile = options.externalFile;
+	delete options.externalFile;
 	let shareFiles = options.shareFiles === true
 		&& globalThis.crossOriginIsolated
 		&& typeof SharedArrayBuffer === "function";
@@ -151,11 +153,13 @@ export default async function getWclap(options) {
 	let bundleBytes = options.bundleBytes ?? Number.MAX_SAFE_INTEGER;
 	let pluginMemoryBytes = options.pluginMemoryBytes
 		?? maximumMemoryPages*wasmPageBytes;
-	let pluginMaximumPages = Math.floor(pluginMemoryBytes/wasmPageBytes);
+	let hintedPluginMemoryBytes = options.hintedPluginMemoryBytes ?? pluginMemoryBytes;
 	if (!Number.isSafeInteger(bundleBytes) || bundleBytes < wasmPageBytes)
 		throw new RangeError(`bundleBytes must be an integer of at least ${wasmPageBytes} bytes`);
-	if (!Number.isSafeInteger(pluginMemoryBytes) || pluginMaximumPages < 1)
+	if (!Number.isSafeInteger(pluginMemoryBytes) || pluginMemoryBytes < wasmPageBytes)
 		throw new RangeError(`pluginMemoryBytes must be an integer of at least ${wasmPageBytes} bytes`);
+	if (!Number.isSafeInteger(hintedPluginMemoryBytes) || hintedPluginMemoryBytes < wasmPageBytes)
+		throw new RangeError(`hintedPluginMemoryBytes must be an integer of at least ${wasmPageBytes} bytes`);
 	if (!options.pluginPath) options.pluginPath = "/plugin/" + fnv1aHex(options.url);
 	if (options.module && options.module instanceof WebAssembly.Module) {
 		// Make a distinct copy of the memory (if it exists)
@@ -183,6 +187,8 @@ export default async function getWclap(options) {
 	}
 
 	function guessMemorySize(bufferOrSize, module, hints = null) {
+		const memoryLimitBytes = hints ? hintedPluginMemoryBytes : pluginMemoryBytes;
+		const pluginMaximumPages = Math.floor(memoryLimitBytes/wasmPageBytes);
 		let importsMemory = false;
 		WebAssembly.Module.imports(module).forEach(entry => {
 			if (entry.kind == 'memory') importsMemory = true;
@@ -201,10 +207,12 @@ export default async function getWclap(options) {
 		if (modulePages > pluginMaximumPages) {
 			const requiredBytes = modulePages*wasmPageBytes;
 			throw codedError("plugin-memory-limit",
-				`The WCLAP module requires at least ${modulePages*wasmPageBytes} bytes, above the ${pluginMemoryBytes}-byte plug-in memory limit`, {
-					stage: "module memory", limitBytes: pluginMemoryBytes,
+				`The WCLAP module requires at least ${modulePages*wasmPageBytes} bytes, above the ${memoryLimitBytes}-byte plug-in memory limit`, {
+					stage: "module memory", limitBytes: memoryLimitBytes,
 					requiredBytes, retryable: true,
-					suggestedLimits: {pluginMemoryBytes: requiredBytes},
+					suggestedLimits: hints
+						? {hintedPluginMemoryBytes: requiredBytes}
+						: {pluginMemoryBytes: requiredBytes},
 				});
 		}
 		let maximumPages = Math.min(pluginMaximumPages,
@@ -264,7 +272,8 @@ export default async function getWclap(options) {
 	}
 
 	// If it's not WASM, assume it's a `.tar.gz`
-	let expanded = await expandTarGz(response, bundleBytes, suppliedBytes, shareFiles);
+	let expanded = await expandTarGz(
+		response, bundleBytes, suppliedBytes, shareFiles, externalFile);
 	let tarFiles = expanded.files;
 	for (let path in tarFiles) {
 		options.files[`${options.pluginPath}/${path}`] = tarFiles[path];
@@ -287,6 +296,11 @@ export default async function getWclap(options) {
 	options.module = await WebAssembly.compile(options.files[wasmPath]);
 	guessMemorySize(options.files[wasmPath], options.module, memoryHints(options.files));
 	options.files[wasmPath] = new ArrayBuffer(0);
+	if (expanded.externalFiles.length) {
+		options.hostFiles = expanded.externalFiles.map((file, id) => ({
+			...file, id, path: `${options.pluginPath}/${file.path}`,
+		}));
+	}
 	options.resourceMemorySpec = resourceMemorySpec(options.files).memorySpec;
 
 	return options;
