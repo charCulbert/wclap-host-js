@@ -215,11 +215,21 @@ export default async function getWclap(options) {
 						: {pluginMemoryBytes: requiredBytes},
 				});
 		}
+		const hintedInitialPages = hints
+			? Math.ceil(hints.recommendedInitialBytes/wasmPageBytes) : modulePages;
+		if (hintedInitialPages > pluginMaximumPages) {
+			const requiredBytes = hintedInitialPages*wasmPageBytes;
+			throw codedError("plugin-memory-limit",
+				`memory.json requests ${requiredBytes} initial bytes, above the ${memoryLimitBytes}-byte hinted plug-in memory limit`, {
+					stage: "module memory", limitBytes: memoryLimitBytes,
+					requiredBytes, retryable: true,
+					suggestedLimits: {hintedPluginMemoryBytes: requiredBytes},
+				});
+		}
 		let maximumPages = Math.min(pluginMaximumPages,
 			declaration?.maximumPages ?? pluginMaximumPages,
 			hints ? Math.floor(hints.recommendedMaximumBytes/wasmPageBytes) : pluginMaximumPages);
-		let initialPages = Math.max(modulePages,
-			hints ? Math.ceil(hints.recommendedInitialBytes/wasmPageBytes) : modulePages);
+		let initialPages = Math.max(modulePages, hintedInitialPages);
 		if (initialPages > maximumPages) {
 			throw codedError("invalid-archive",
 				"memory.json recommendations conflict with the module memory declaration", {
